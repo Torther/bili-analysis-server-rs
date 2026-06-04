@@ -1,14 +1,16 @@
 FROM rust:1-alpine AS builder
 
 RUN apk add --no-cache musl-dev
+ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
 COPY src/ ./src/
 
-RUN cargo build --release && \
-    cp target/release/bilibilianalysis-server /app/server
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    cargo build --release && \
+    cp target/release/bili-analysis-server-rs /app/server
 
 FROM alpine:latest
 

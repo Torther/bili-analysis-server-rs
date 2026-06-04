@@ -1,5 +1,6 @@
 mod bilibili;
 mod cache;
+mod dedup;
 mod mirror_cdn;
 
 use axum::{
@@ -12,6 +13,7 @@ use axum::{
 use serde::Deserialize;
 use std::sync::LazyLock;
 use std::time::Instant;
+use tokio::signal;
 
 fn redirect_302(url: &str) -> Response {
     Response::builder()
@@ -43,19 +45,14 @@ async fn redirect_handler(Query(params): Query<RedirectQuery>) -> impl IntoRespo
         }
     };
 
-    let cache_key = format!("raw:{}", target_url);
-
-    if let Some(cached) = cache::CACHE.get(&cache_key) {
-        return redirect_302(&cached);
-    }
-
-    match bilibili::resolve_raw_url(&target_url).await {
-        Ok(cdn_url) => {
-            cache::CACHE.insert(cache_key, cdn_url.clone());
-            redirect_302(&cdn_url)
-        }
+    match dedup::dedup_resolve(&target_url).await {
+        Ok(cdn_url) => redirect_302(&cdn_url),
         Err(err) => {
-            tracing::error!("[ERROR] Failed to resolve: {} {}", target_url, err);
+            tracing::error!(
+                target_url = %target_url,
+                error = %err,
+                "failed to resolve"
+            );
             (
                 StatusCode::BAD_GATEWAY,
                 axum::Json(serde_json::json!({
@@ -73,6 +70,32 @@ async fn health_handler() -> impl IntoResponse {
         "status": "ok",
         "uptime": START_TIME.elapsed().as_secs()
     }))
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    tracing::info!("shutdown signal received, starting graceful shutdown");
 }
 
 #[tokio::main]
@@ -97,6 +120,12 @@ async fn main() {
         .await
         .unwrap();
 
-    tracing::info!("BiliAnalysis Server running on http://localhost:{}", port);
-    axum::serve(listener, app).await.unwrap();
+    tracing::info!(port = port, "server starting");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .unwrap();
+
+    tracing::info!("server stopped");
 }
