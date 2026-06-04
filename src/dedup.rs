@@ -31,7 +31,7 @@ impl Future for WatchFuture {
                 let _ = changed.poll(cx);
                 Poll::Pending
             }
-            Err(_) => Poll::Ready(Err("fetch task panicked".into())),
+            Err(_) => Poll::Pending,
         }
     }
 }
@@ -45,17 +45,17 @@ pub async fn dedup_resolve(
         return Ok(cached);
     }
 
-    let rx = {
+    let (rx, is_leader) = {
+        let mut is_leader = false;
         let entry = IN_FLIGHT.entry(cache_key.clone()).or_insert_with(|| {
+            is_leader = true;
             let (tx, _) = watch::channel(None);
             tx
         });
-        entry.value().subscribe()
+        (entry.value().subscribe(), is_leader)
     };
 
-    let has_sender = IN_FLIGHT.get(&cache_key).map(|e| !e.is_closed()).unwrap_or(false);
-
-    if has_sender {
+    if !is_leader {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(60),
             WatchFuture { rx },
@@ -66,6 +66,10 @@ pub async fn dedup_resolve(
             Ok(Ok(url)) => return Ok(url),
             Ok(Err(e)) => return Err(e),
             Err(_) => {}
+        }
+
+        if let Some(cached) = crate::cache::CACHE.get(&cache_key) {
+            return Ok(cached);
         }
     }
 
