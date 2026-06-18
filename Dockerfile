@@ -3,6 +3,7 @@ FROM rust:1-alpine AS builder
 RUN apk add --no-cache musl-dev
 
 ARG CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
+ARG TARGETARCH
 
 WORKDIR /app
 
