@@ -89,6 +89,10 @@ pub fn upgrade_cdn_hostname(raw_url: &str) -> String {
     }
 
     if is_mirror_cdn(&hostname) {
+        if url.query_pairs().any(|(k, v)| k == "os" && v == "mcdn") {
+            let _ = url.set_host(Some(pick_mirror_china()));
+            return url.to_string();
+        }
         return url.to_string();
     }
 
